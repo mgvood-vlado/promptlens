@@ -193,7 +193,8 @@ export default function PromptLens() {
   }
 
   function wrapPrompt(raw) {
-    return "<PROMPT_ZA_ANALIZ>\n" + raw + "\n</PROMPT_ZA_ANALIZ>";
+    var escaped = raw.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return "<PROMPT_ZA_ANALIZ>\n" + escaped + "\n</PROMPT_ZA_ANALIZ>";
   }
 
   function generateSection(secName) {
