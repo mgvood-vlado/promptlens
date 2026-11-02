@@ -17,7 +17,7 @@ const DIM_NAMES = ["Яснота и структура","Дефиниране н
 const STORAGE_KEY = "pl_history";
 const MAX_HISTORY = 10;
 const MAX_PROMPT_CHARS = 15000;
-const EMPTY_RESULT = { audit: null, promptSnapshot: "" };
+const EMPTY_RESULT = { audit: null, promptSnapshot: "", prev: null };
 
 // ── Helpers ──────────────────────────────────────────────────
 function parseAudit(raw) {
@@ -175,7 +175,6 @@ export default function PromptLens() {
   var [synthesizedPrompt,setSynthesizedPrompt]=useState("");
   var [synthesizing,setSynthesizing]=useState(false);
   var [synthAuditLoading,setSynthAuditLoading]=useState(false);
-  var [previousScore,setPreviousScore]=useState(null);
   var [copiedSynth,setCopiedSynth]=useState(false);
   var [showSynthPreview,setShowSynthPreview]=useState(false);
   var [showExportModal,setShowExportModal]=useState(false);
@@ -220,7 +219,7 @@ export default function PromptLens() {
     return (data && data.text) ? data.text : "";
   }
 
-  async function analyze(promptOverride) {
+  async function analyze(promptOverride, prevScore) {
     var p=promptOverride||prompt;
     if (!p.trim()) { setError("Моля, въведете system prompt."); return; }
     if (p.length>MAX_PROMPT_CHARS) {
@@ -234,7 +233,7 @@ export default function PromptLens() {
     if (!promptOverride) {
       // Нов, самостоятелен анализ: чистим всичко. При повторен одит на синтезирания
       // промпт запазваме предишната оценка (за сравнение) и синтезирания текст.
-      setSynthesizedPrompt(""); setPreviousScore(null);
+      setSynthesizedPrompt("");
       setOriginalPromptSnapshot(p.trim());
     }
     setView("loading"); setLoadMsg("Анализиране на структурата...");
@@ -246,7 +245,7 @@ export default function PromptLens() {
       if (auditData.dimensions && auditData.dimensions.length===DIM_NAMES.length) {
         auditData.dimensions.forEach(function(d,i){ d.name=DIM_NAMES[i]; });
       }
-      setResult({audit:auditData, promptSnapshot:p.trim()});
+      setResult({audit:auditData, promptSnapshot:p.trim(), prev:(typeof prevScore==="number"?prevScore:null)});
       if (!promptOverride) {
         var entry={id:""+Date.now(),date:nowStr(),promptPreview:p.trim().slice(0,80)+(p.trim().length>80?"…":""),promptFull:p.trim(),overallScore:auditData.overallScore,dimensions:auditData.dimensions,topIssues:auditData.topIssues,quickWins:auditData.quickWins};
         var hist=loadHistory(); hist.unshift(entry);
@@ -302,8 +301,7 @@ export default function PromptLens() {
     setSynthAuditLoading(true);
     var before=result.audit.overallScore;
     setPrompt(synthesizedPrompt);
-    await analyze(synthesizedPrompt);
-    setPreviousScore(before);
+    await analyze(synthesizedPrompt, before);
     setSynthAuditLoading(false); unlock("synthAudit");
   }
 
@@ -328,9 +326,9 @@ export default function PromptLens() {
 
   function loadFromHistory(entry) {
     setPrompt(entry.promptFull);
-    setResult({audit:{overallScore:entry.overallScore,dimensions:entry.dimensions,topIssues:entry.topIssues,quickWins:entry.quickWins},promptSnapshot:entry.promptFull});
+    setResult({audit:{overallScore:entry.overallScore,dimensions:entry.dimensions,topIssues:entry.topIssues,quickWins:entry.quickWins},promptSnapshot:entry.promptFull,prev:null});
     setSections({}); setDimResults({}); setActiveDim(""); setCurrentEntryId(entry.id);
-    setSelectedRecs({}); setSynthesizedPrompt(""); setPreviousScore(null); setShowSynthPreview(false);
+    setSelectedRecs({}); setSynthesizedPrompt(""); setShowSynthPreview(false);
     setOriginalPromptSnapshot(entry.promptFull);
     setTab("overview"); setView("results");
   }
@@ -343,7 +341,7 @@ export default function PromptLens() {
 
   function reset() {
     setResult(EMPTY_RESULT); setSections({}); setDimResults({}); setActiveDim("");
-    setSelectedRecs({}); setSynthesizedPrompt(""); setPreviousScore(null); setShowSynthPreview(false);
+    setSelectedRecs({}); setSynthesizedPrompt(""); setShowSynthPreview(false);
     setOriginalPromptSnapshot(""); setView("input"); setPrompt(""); setError(""); setCurrentEntryId(null);
   }
 
@@ -360,6 +358,7 @@ export default function PromptLens() {
   var pill={display:"flex",alignItems:"flex-start",gap:8,padding:"8px 10px",background:"#f7f7f5",borderRadius:8,marginBottom:6,fontSize:13,lineHeight:"1.5"};
   var audit=result.audit;
   var selectedCount=Object.keys(selectedRecs).length;
+  var previousScore=(typeof result.prev==="number")?result.prev:null;
   var scoreDelta=previousScore!==null&&audit?audit.overallScore-previousScore:null;
   var histScores=history.map(function(h){return h.overallScore;}).reverse();
   var tokenEst=Math.ceil(prompt.length/4);
@@ -477,16 +476,18 @@ export default function PromptLens() {
           {/* Overview */}
           {tab==="overview"&&(
             <div>
+              {scoreDelta!==null&&(
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap",padding:"10px 14px",marginBottom:14,borderRadius:10,border:"1px solid "+(scoreDelta>0?"#A8DFC4":scoreDelta<0?"#F09595":"#ddd"),background:scoreDelta>0?"#E8F7F0":scoreDelta<0?"#FCEBEB":"#f7f7f5"}}>
+                  <div style={{fontSize:12,fontWeight:600,color:"#333"}}>Резултат след подобрението</div>
+                  <div style={{fontSize:18,fontWeight:700,...mono,color:scoreDelta>0?"#0F6E56":scoreDelta<0?"#A32D2D":"#666"}}>
+                    {previousScore} → {audit.overallScore} <span>({scoreDelta>0?"+":""}{scoreDelta})</span>
+                  </div>
+                </div>
+              )}
               <div style={{display:"flex",gap:12,alignItems:"stretch",marginBottom:16,flexWrap:"wrap"}}>
                 <div style={{textAlign:"center",padding:"1.2rem 1.5rem",background:"#f7f7f5",borderRadius:12,minWidth:150,flex:"0 0 auto"}}>
                   <div style={{fontSize:60,fontWeight:700,lineHeight:1,...mono,color:scoreColor(audit.overallScore)}}>{animatedScore}</div>
                   <div style={{fontSize:11,color:"#aaa",marginTop:2,...mono,textTransform:"uppercase",letterSpacing:"0.08em"}}>/ 10</div>
-                  {scoreDelta!==null&&(
-                    <div style={{marginTop:6,fontSize:12,...mono}}>
-                      <span style={{color:"#aaa"}}>{previousScore} → {audit.overallScore} </span>
-                      <span style={{fontWeight:700,color:scoreDelta>0?"#1D9E75":scoreDelta<0?"#E24B4A":"#888"}}>{scoreDelta>0?"+":""}{scoreDelta}</span>
-                    </div>
-                  )}
                   <div style={{marginTop:8}}><Badge score={audit.overallScore}/></div>
                 </div>
                 <div style={{flex:1,minWidth:220,display:"flex",alignItems:"center",justifyContent:"center"}}><RadarChart dimensions={audit.dimensions}/></div>
