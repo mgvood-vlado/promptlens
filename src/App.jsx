@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 // В този файл НЯМА инструкции към модела. Те са само на сървъра (api/claude.js).
 // Браузърът изпраща действие + текст и получава готов отговор.
@@ -183,6 +183,11 @@ export default function PromptLens() {
   var [copiedExport,setCopiedExport]=useState(false);
   var [originalPromptSnapshot,setOriginalPromptSnapshot]=useState("");
 
+  // Незабавни ключалки против двойно натискане (state се сменя със закъснение, ref - веднага)
+  var busy=useRef({});
+  function lock(k){ if (busy.current[k]) return false; busy.current[k]=true; return true; }
+  function unlock(k){ busy.current[k]=false; }
+
   useEffect(function() { setHistory(loadHistory()); }, []);
 
   useEffect(function() {
@@ -223,9 +228,15 @@ export default function PromptLens() {
       setView("input");
       return;
     }
+    if (!lock("analyze")) return;
     setError(""); setResult(EMPTY_RESULT); setSections({}); setDimResults({}); setActiveDim("");
-    setSelectedRecs({}); setSynthesizedPrompt(""); setPreviousScore(null); setShowSynthPreview(false);
-    if (!promptOverride) setOriginalPromptSnapshot(p.trim());
+    setSelectedRecs({}); setShowSynthPreview(false);
+    if (!promptOverride) {
+      // Нов, самостоятелен анализ: чистим всичко. При повторен одит на синтезирания
+      // промпт запазваме предишната оценка (за сравнение) и синтезирания текст.
+      setSynthesizedPrompt(""); setPreviousScore(null);
+      setOriginalPromptSnapshot(p.trim());
+    }
     setView("loading"); setLoadMsg("Анализиране на структурата...");
     try {
       var raw=await callApi({action:"audit", prompt:p.trim()});
@@ -244,10 +255,11 @@ export default function PromptLens() {
       }
       setTab("overview"); setView("results");
     } catch(err) { setError("Грешка: "+err.message); setView("input"); }
+    unlock("analyze");
   }
 
   async function optimizeDimension(dimName) {
-    if (dimLoading) return; setDimLoading(dimName); setActiveDim(dimName);
+    if (dimLoading||!lock("dim")) return; setDimLoading(dimName); setActiveDim(dimName);
     var basePrompt=synthesizedPrompt||result.promptSnapshot||prompt.trim();
     try {
       var res=await callApi({action:"dimension", name:dimName, prompt:basePrompt});
@@ -255,7 +267,7 @@ export default function PromptLens() {
     } catch(e) {
       setDimResults(function(p){var n=Object.assign({},p);n[dimName]="Грешка: "+e.message;return n;});
     }
-    setDimLoading("");
+    setDimLoading(""); unlock("dim");
   }
 
   function addRecommendation(dimName) {
@@ -272,33 +284,34 @@ export default function PromptLens() {
   }
 
   async function synthesize() {
-    if (synthesizing) return;
-    var keys=Object.keys(selectedRecs); if (keys.length===0) return;
+    if (synthesizing||!lock("synth")) return;
+    var keys=Object.keys(selectedRecs); if (keys.length===0) { unlock("synth"); return; }
     setSynthesizing(true); setSynthesizedPrompt("");
     var items=keys.map(function(k){
       return {name:k, recs:selectedRecs[k].recs||"", imp:selectedRecs[k].imp||""};
     });
     try {
-      var synth=await callApi({action:"synthesis", prompt:(originalPromptSnapshot||result.promptSnapshot), items:items});
+      var synth=await callApi({action:"synthesis", prompt:(result.promptSnapshot||originalPromptSnapshot), items:items});
       setSynthesizedPrompt(synth.trim()); setShowSynthPreview(true);
     } catch(e) { setError("Грешка при синтез: "+e.message); }
-    setSynthesizing(false);
+    setSynthesizing(false); unlock("synth");
   }
 
   async function auditSynthesized() {
-    if (!synthesizedPrompt||synthAuditLoading) return;
+    if (!synthesizedPrompt||synthAuditLoading||!lock("synthAudit")) return;
     setSynthAuditLoading(true);
-    setPreviousScore(result.audit.overallScore);
+    var before=result.audit.overallScore;
     setPrompt(synthesizedPrompt);
     await analyze(synthesizedPrompt);
-    setSynthAuditLoading(false);
+    setPreviousScore(before);
+    setSynthAuditLoading(false); unlock("synthAudit");
   }
 
   function generateSection(secName) {
-    if (sectionLoading) return; setSectionLoading(secName);
+    if (sectionLoading||!lock("sec")) return; setSectionLoading(secName);
     callApi({action:"section", name:secName, prompt:result.promptSnapshot})
-      .then(function(txt){setSections(function(p){var n=Object.assign({},p);n[secName]=txt.trim();return n;});setSectionLoading("");})
-      .catch(function(e){setSections(function(p){var n=Object.assign({},p);n[secName]="Грешка: "+e.message;return n;});setSectionLoading("");});
+      .then(function(txt){setSections(function(p){var n=Object.assign({},p);n[secName]=txt.trim();return n;});setSectionLoading("");unlock("sec");})
+      .catch(function(e){setSections(function(p){var n=Object.assign({},p);n[secName]="Грешка: "+e.message;return n;});setSectionLoading("");unlock("sec");});
   }
 
   function exportResult() {
@@ -379,7 +392,7 @@ export default function PromptLens() {
           </div>
           <div>
             <div style={{fontSize:17,fontWeight:600}}>PromptLens</div>
-            <div style={{fontSize:11,color:"#aaa",...mono}}>AI Prompt Auditor — v2.1</div>
+            <div style={{fontSize:11,color:"#aaa",...mono}}>AI Prompt Auditor — v2.2</div>
           </div>
         </div>
         <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -647,9 +660,9 @@ export default function PromptLens() {
                 <div style={{background:"#E8F7F0",border:"1px solid #A8DFC4",borderRadius:10,padding:"12px 14px",marginBottom:12,animation:"fadeIn 0.3s ease"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                     <div style={{fontSize:13,fontWeight:600,color:"#0A5C3A"}}>{selectedCount} препоръки готови за синтез</div>
-                    <button onClick={synthesize} disabled={synthesizing} style={{padding:"6px 18px",background:synthesizing?"#aaa":"#0F6E56",color:"#fff",border:"none",borderRadius:8,fontSize:12,fontWeight:600,cursor:synthesizing?"not-allowed":"pointer",display:"flex",alignItems:"center",gap:6}}>
+                    <button onClick={synthesize} disabled={synthesizing||!!synthesizedPrompt} style={{padding:"6px 18px",background:(synthesizing||synthesizedPrompt)?"#aaa":"#0F6E56",color:"#fff",border:"none",borderRadius:8,fontSize:12,fontWeight:600,cursor:(synthesizing||synthesizedPrompt)?"not-allowed":"pointer",display:"flex",alignItems:"center",gap:6}}>
                       {synthesizing&&<div style={{width:12,height:12,border:"2px solid rgba(255,255,255,0.4)",borderTopColor:"#fff",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/>}
-                      {synthesizing?"Синтезиране...":"⚡ Синтезирай нов промпт"}
+                      {synthesizing?"Синтезиране...":synthesizedPrompt?"✓ Синтезиран (смени препоръките за нов)":"⚡ Синтезирай нов промпт"}
                     </button>
                   </div>
                   <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
